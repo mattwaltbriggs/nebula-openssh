@@ -1,0 +1,8 @@
+Package: openssh-nebula
+Version: 10.6p2-2
+Architecture: mipsel-3.4
+Maintainer: nebula-build
+Section: net
+Priority: optional
+Installed-Size: 0
+Description: OpenSSH 10.6p2 server and client, statically linked for the Nebula pad

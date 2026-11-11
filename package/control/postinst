@@ -1,0 +1,7 @@
+#!/bin/sh
+mkdir -p /var/empty /var/run
+chmod 755 /var/empty
+grep -q '^sshd:' /etc/passwd || echo 'sshd:x:74:74:sshd:/var/empty:/bin/false' >> /etc/passwd
+grep -q '^sshd:' /etc/group || echo 'sshd:x:74:' >> /etc/group
+[ -f /etc/ssh/ssh_host_ed25519_key ] || /usr/bin/ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N ""
+exit 0

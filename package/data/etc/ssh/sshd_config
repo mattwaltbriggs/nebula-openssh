@@ -1,0 +1,9 @@
+Port 2222
+ListenAddress 0.0.0.0
+HostKey /etc/ssh/ssh_host_ed25519_key
+PermitRootLogin yes
+PubkeyAuthentication yes
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+Subsystem sftp /usr/libexec/sftp-server
+PidFile /var/run/sshd.pid

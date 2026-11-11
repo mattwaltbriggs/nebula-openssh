@@ -1,0 +1,2 @@
+#!/bin/sh
+exec zig cc -target mipsel-linux-musleabi -mcpu=mips32r2 -msoft-float "$@"
