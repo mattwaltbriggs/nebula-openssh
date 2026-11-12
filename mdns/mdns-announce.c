@@ -1,12 +1,13 @@
 /*
- * mdns-announce: announce a host name and an SSH service over mDNS (Bonjour).
+ * mdns-announce: announce a host name and SSH/SFTP services over mDNS (Bonjour).
  *
- * Publishes:
+ * Publishes, for each service type T in {_ssh._tcp, _sftp-ssh._tcp, _sftp._tcp}:
+ *   T.local                          PTR   <label>.T.local
+ *   <label>.T.local                  SRV   <port> host.local
+ *   <label>.T.local                  TXT   (empty)
+ *   _services._dns-sd._udp.local     PTR   T.local
+ * and for the host:
  *   host.local                       A     <ipv4>
- *   _ssh._tcp.local                  PTR   <label>._ssh._tcp.local
- *   <label>._ssh._tcp.local          SRV   <port> host.local
- *   <label>._ssh._tcp.local          TXT   (empty)
- *   _services._dns-sd._udp.local     PTR   _ssh._tcp.local
  *
  * Usage: mdns-announce [-n host.local] [-s label] [-p port] [-a ipv4] [-i iface_ipv4]
  */
@@ -37,12 +38,19 @@
 #define T_SRV 33
 #define T_ANY 255
 
+#define NSVC 3
+static const char *service_types[NSVC] = {
+	"_ssh._tcp.local",
+	"_sftp-ssh._tcp.local",
+	"_sftp._tcp.local",
+};
+static const char DNS_SD_BROWSE[] = "_services._dns-sd._udp.local";
+
 struct cfg {
-	char host[256];      /* host.local */
-	char svc[64];        /* _ssh._tcp.local */
-	char inst[300];      /* label._ssh._tcp.local */
-	char dns_sd[64];     /* _services._dns-sd._udp.local */
-	uint32_t ip;         /* network order */
+	char host[256];                 /* host.local */
+	char label[64];                 /* instance label, e.g. "Nebula" */
+	char inst[NSVC][320];           /* label.<type> for each service type */
+	uint32_t ip;                    /* network order */
 	uint16_t port;
 };
 
@@ -125,7 +133,7 @@ static int add_rr(uint8_t *buf, int n, const char *name, uint16_t type,
 static int build_announce(uint8_t *buf, const struct cfg *c, int goodbye)
 {
 	uint8_t rd[300];
-	int n = 12, rdn, count = 0;
+	int n = 12, rdn, count = 0, s;
 	uint32_t httl = goodbye ? 0 : HOST_TTL;
 	uint32_t sttl = goodbye ? 0 : SVC_TTL;
 
@@ -136,24 +144,29 @@ static int build_announce(uint8_t *buf, const struct cfg *c, int goodbye)
 	n = add_rr(buf, n, c->host, T_A, 0x8001, httl, rd, 4);
 	count++;
 
-	rdn = encode_name(rd, c->inst);
-	n = add_rr(buf, n, c->svc, T_PTR, 0x0001, sttl, rd, rdn);
-	count++;
+	for (s = 0; s < NSVC; s++) {
+		const char *svc = service_types[s];
+		const char *inst = c->inst[s];
 
-	memset(rd, 0, 4);
-	rd[4] = c->port >> 8;
-	rd[5] = c->port & 0xff;
-	rdn = 6 + encode_name(rd + 6, c->host);
-	n = add_rr(buf, n, c->inst, T_SRV, 0x8001, httl, rd, rdn);
-	count++;
+		rdn = encode_name(rd, inst);
+		n = add_rr(buf, n, svc, T_PTR, 0x0001, sttl, rd, rdn);
+		count++;
 
-	rd[0] = 0;
-	n = add_rr(buf, n, c->inst, T_TXT, 0x8001, sttl, rd, 1);
-	count++;
+		memset(rd, 0, 4);
+		rd[4] = c->port >> 8;
+		rd[5] = c->port & 0xff;
+		rdn = 6 + encode_name(rd + 6, c->host);
+		n = add_rr(buf, n, inst, T_SRV, 0x8001, httl, rd, rdn);
+		count++;
 
-	rdn = encode_name(rd, c->svc);
-	n = add_rr(buf, n, c->dns_sd, T_PTR, 0x0001, sttl, rd, rdn);
-	count++;
+		rd[0] = 0;
+		n = add_rr(buf, n, inst, T_TXT, 0x8001, sttl, rd, 1);
+		count++;
+
+		rdn = encode_name(rd, svc);
+		n = add_rr(buf, n, DNS_SD_BROWSE, T_PTR, 0x0001, sttl, rd, rdn);
+		count++;
+	}
 
 	buf[6] = count >> 8;
 	buf[7] = count & 0xff;
@@ -173,10 +186,17 @@ static void send_announce(int fd, const struct cfg *c, int goodbye)
 
 static int question_matches(const char *qname, const struct cfg *c)
 {
-	return strcasecmp(qname, c->host) == 0 ||
-	       strcasecmp(qname, c->svc) == 0 ||
-	       strcasecmp(qname, c->inst) == 0 ||
-	       strcasecmp(qname, c->dns_sd) == 0;
+	int s;
+	if (strcasecmp(qname, c->host) == 0)
+		return 1;
+	if (strcasecmp(qname, DNS_SD_BROWSE) == 0)
+		return 1;
+	for (s = 0; s < NSVC; s++) {
+		if (strcasecmp(qname, service_types[s]) == 0 ||
+		    strcasecmp(qname, c->inst[s]) == 0)
+			return 1;
+	}
+	return 0;
 }
 
 static uint32_t detect_ipv4(void)
@@ -206,7 +226,7 @@ int main(int argc, char **argv)
 	const char *label = "Nebula";
 	const char *host = "nebula.local";
 	uint32_t iface = 0;
-	int opt, fd, one = 1, port = 22;
+	int opt, fd, one = 1, port = 22, s;
 	struct sockaddr_in sa = { 0 };
 	struct ip_mreq mreq;
 	uint8_t buf[PKT_MAX];
@@ -238,9 +258,9 @@ int main(int argc, char **argv)
 	}
 
 	snprintf(c.host, sizeof(c.host), "%s", host);
-	snprintf(c.svc, sizeof(c.svc), "_ssh._tcp.local");
-	snprintf(c.inst, sizeof(c.inst), "%s._ssh._tcp.local", label);
-	snprintf(c.dns_sd, sizeof(c.dns_sd), "_services._dns-sd._udp.local");
+	snprintf(c.label, sizeof(c.label), "%s", label);
+	for (s = 0; s < NSVC; s++)
+		snprintf(c.inst[s], sizeof(c.inst[s]), "%s.%s", label, service_types[s]);
 	c.port = (uint16_t)port;
 
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -277,7 +297,7 @@ int main(int argc, char **argv)
 	signal(SIGINT, on_signal);
 
 	printf("mdns-announce: %s, %s on port %d, address %s\n",
-	       c.host, c.inst, port, inet_ntoa(*(struct in_addr *)&c.ip));
+	       c.host, c.label, port, inet_ntoa(*(struct in_addr *)&c.ip));
 	fflush(stdout);
 
 	/* Startup announcements: 0s, 1s, 2s, 4s. */

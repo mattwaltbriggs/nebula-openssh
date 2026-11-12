@@ -1,8 +1,8 @@
 Package: nebula-mdns
-Version: 1.0-1
+Version: 1.1-1
 Architecture: mipsel-3.4
 Maintainer: nebula-build
 Section: net
 Priority: optional
 Installed-Size: 0
-Description: Announces nebula.local and SSH over mDNS/Bonjour at startup; statically linked for the Nebula pad
+Description: Announces nebula.local, SSH and SFTP over mDNS/Bonjour at startup; statically linked for the Nebula pad
