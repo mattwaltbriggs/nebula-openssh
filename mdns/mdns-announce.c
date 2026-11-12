@@ -1,18 +1,24 @@
 /*
- * mdns-announce: announce a host name and SSH/SFTP services over mDNS (Bonjour).
+ * mdns-announce: announce a host name and a list of services over mDNS (Bonjour).
  *
- * Publishes, for each service type T in {_ssh._tcp, _sftp-ssh._tcp, _sftp._tcp}:
- *   T.local                          PTR   <label>.T.local
- *   <label>.T.local                  SRV   <port> host.local
- *   <label>.T.local                  TXT   (empty)
- *   _services._dns-sd._udp.local     PTR   T.local
+ * The service list comes from a config file, one service per line:
+ *   label|type|port|path
+ * for example:
+ *   Nebula Fluidd|_http._tcp|4408|/
+ * Blank lines and lines starting with '#' are ignored. The path is published
+ * as a TXT "path=" record (empty if the field is empty).
+ *
+ * For each service it publishes:
+ *   type.local                        PTR   label.type.local
+ *   label.type.local                  SRV   <port> host.local
+ *   label.type.local                  TXT   path=<path>
+ *   _services._dns-sd._udp.local      PTR   type.local
  * and for the host:
- *   host.local                       A     <ipv4>
+ *   host.local                        A     <ipv4>
  *
- * Usage: mdns-announce [-n host.local] [-s label] [-p port] [-a ipv4] [-i iface_ipv4]
+ * Usage: mdns-announce -c services.conf [-n host.local] [-a ipv4] [-i iface_ipv4]
  */
 #include <arpa/inet.h>
-#include <ctype.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -30,7 +36,10 @@
 #define MDNS_GROUP "224.0.0.251"
 #define HOST_TTL 120
 #define SVC_TTL 4500
-#define PKT_MAX 1024
+#define PKT_MAX 512
+#define MAX_SERVICES 32
+#define LINE_MAX_LEN 512
+#define DNS_SD_BROWSE "_services._dns-sd._udp.local"
 
 #define T_A 1
 #define T_PTR 12
@@ -38,20 +47,19 @@
 #define T_SRV 33
 #define T_ANY 255
 
-#define NSVC 3
-static const char *service_types[NSVC] = {
-	"_ssh._tcp.local",
-	"_sftp-ssh._tcp.local",
-	"_sftp._tcp.local",
+struct service {
+	char label[128];
+	char type[128];     /* e.g. _http._tcp.local */
+	char inst[256];     /* label.type.local */
+	uint16_t port;
+	char path[256];
 };
-static const char DNS_SD_BROWSE[] = "_services._dns-sd._udp.local";
 
 struct cfg {
-	char host[256];                 /* host.local */
-	char label[64];                 /* instance label, e.g. "Nebula" */
-	char inst[NSVC][320];           /* label.<type> for each service type */
-	uint32_t ip;                    /* network order */
-	uint16_t port;
+	char host[256];
+	uint32_t ip;        /* network order */
+	struct service svc[MAX_SERVICES];
+	int nsvc;
 };
 
 static volatile sig_atomic_t running = 1;
@@ -129,11 +137,12 @@ static int add_rr(uint8_t *buf, int n, const char *name, uint16_t type,
 	return n + rdlen;
 }
 
-/* Builds one response with every record. goodbye=1 sends TTL 0 for all. */
-static int build_announce(uint8_t *buf, const struct cfg *c, int goodbye)
+/* One response packet for a single service, including the host address.
+ * goodbye=1 sends TTL 0 for all records. */
+static int build_announce(uint8_t *buf, const struct cfg *c, const struct service *s, int goodbye)
 {
-	uint8_t rd[300];
-	int n = 12, rdn, count = 0, s;
+	uint8_t rd[512];
+	int n = 12, rdn, count = 0, txtlen;
 	uint32_t httl = goodbye ? 0 : HOST_TTL;
 	uint32_t sttl = goodbye ? 0 : SVC_TTL;
 
@@ -144,59 +153,114 @@ static int build_announce(uint8_t *buf, const struct cfg *c, int goodbye)
 	n = add_rr(buf, n, c->host, T_A, 0x8001, httl, rd, 4);
 	count++;
 
-	for (s = 0; s < NSVC; s++) {
-		const char *svc = service_types[s];
-		const char *inst = c->inst[s];
+	rdn = encode_name(rd, s->inst);
+	n = add_rr(buf, n, s->type, T_PTR, 0x0001, sttl, rd, rdn);
+	count++;
 
-		rdn = encode_name(rd, inst);
-		n = add_rr(buf, n, svc, T_PTR, 0x0001, sttl, rd, rdn);
-		count++;
+	memset(rd, 0, 4);
+	rd[4] = s->port >> 8;
+	rd[5] = s->port & 0xff;
+	rdn = 6 + encode_name(rd + 6, c->host);
+	n = add_rr(buf, n, s->inst, T_SRV, 0x8001, httl, rd, rdn);
+	count++;
 
-		memset(rd, 0, 4);
-		rd[4] = c->port >> 8;
-		rd[5] = c->port & 0xff;
-		rdn = 6 + encode_name(rd + 6, c->host);
-		n = add_rr(buf, n, inst, T_SRV, 0x8001, httl, rd, rdn);
-		count++;
-
+	if (s->path[0]) {
+		txtlen = 1 + (int)strlen("path=") + (int)strlen(s->path);
+		rd[0] = (uint8_t)(txtlen - 1);
+		memcpy(rd + 1, "path=", 5);
+		memcpy(rd + 6, s->path, strlen(s->path));
+	} else {
+		txtlen = 1;
 		rd[0] = 0;
-		n = add_rr(buf, n, inst, T_TXT, 0x8001, sttl, rd, 1);
-		count++;
-
-		rdn = encode_name(rd, svc);
-		n = add_rr(buf, n, DNS_SD_BROWSE, T_PTR, 0x0001, sttl, rd, rdn);
-		count++;
 	}
+	n = add_rr(buf, n, s->inst, T_TXT, 0x8001, sttl, rd, txtlen);
+	count++;
+
+	rdn = encode_name(rd, s->type);
+	n = add_rr(buf, n, DNS_SD_BROWSE, T_PTR, 0x0001, sttl, rd, rdn);
+	count++;
 
 	buf[6] = count >> 8;
 	buf[7] = count & 0xff;
 	return n;
 }
 
-static void send_announce(int fd, const struct cfg *c, int goodbye)
+static void send_all(int fd, const struct cfg *c, int goodbye)
 {
 	uint8_t buf[PKT_MAX];
 	struct sockaddr_in dst = { 0 };
-	int n = build_announce(buf, c, goodbye);
+	int i;
 	dst.sin_family = AF_INET;
 	dst.sin_port = htons(MDNS_PORT);
 	inet_pton(AF_INET, MDNS_GROUP, &dst.sin_addr);
-	sendto(fd, buf, n, 0, (struct sockaddr *)&dst, sizeof(dst));
+	for (i = 0; i < c->nsvc; i++) {
+		int n = build_announce(buf, c, &c->svc[i], goodbye);
+		sendto(fd, buf, n, 0, (struct sockaddr *)&dst, sizeof(dst));
+	}
 }
 
 static int question_matches(const char *qname, const struct cfg *c)
 {
-	int s;
+	int i;
 	if (strcasecmp(qname, c->host) == 0)
 		return 1;
 	if (strcasecmp(qname, DNS_SD_BROWSE) == 0)
 		return 1;
-	for (s = 0; s < NSVC; s++) {
-		if (strcasecmp(qname, service_types[s]) == 0 ||
-		    strcasecmp(qname, c->inst[s]) == 0)
+	for (i = 0; i < c->nsvc; i++) {
+		if (strcasecmp(qname, c->svc[i].type) == 0 ||
+		    strcasecmp(qname, c->svc[i].inst) == 0)
 			return 1;
 	}
 	return 0;
+}
+
+static int load_config(struct cfg *c, const char *path)
+{
+	FILE *f = fopen(path, "r");
+	char line[LINE_MAX_LEN];
+	if (!f) {
+		perror(path);
+		return -1;
+	}
+	while (fgets(line, sizeof(line), f)) {
+		char *fields[4], *p;
+		int nf = 0;
+		struct service *s;
+
+		line[strcspn(line, "\r\n")] = 0;
+		if (line[0] == 0 || line[0] == '#')
+			continue;
+		p = line;
+		while (nf < 4) {
+			char *bar = strchr(p, '|');
+			fields[nf++] = p;
+			if (!bar)
+				break;
+			*bar = 0;
+			p = bar + 1;
+		}
+		if (nf != 4 || !*fields[0] || !*fields[1] || !*fields[2]) {
+			fprintf(stderr, "mdns-announce: bad line in %s: %s\n", path, line);
+			continue;
+		}
+		if (c->nsvc >= MAX_SERVICES) {
+			fprintf(stderr, "mdns-announce: too many services\n");
+			break;
+		}
+		s = &c->svc[c->nsvc];
+		snprintf(s->label, sizeof(s->label), "%s", fields[0]);
+		snprintf(s->type, sizeof(s->type), "%s.local", fields[1]);
+		snprintf(s->inst, sizeof(s->inst), "%s.%s", s->label, s->type);
+		s->port = (uint16_t)atoi(fields[2]);
+		snprintf(s->path, sizeof(s->path), "%s", fields[3]);
+		if (s->port == 0) {
+			fprintf(stderr, "mdns-announce: bad port for %s\n", s->label);
+			continue;
+		}
+		c->nsvc++;
+	}
+	fclose(f);
+	return c->nsvc > 0 ? 0 : -1;
 }
 
 static uint32_t detect_ipv4(void)
@@ -222,30 +286,28 @@ static uint32_t detect_ipv4(void)
 
 int main(int argc, char **argv)
 {
-	struct cfg c;
-	const char *label = "Nebula";
+	static struct cfg c;
 	const char *host = "nebula.local";
+	const char *conf = NULL;
 	uint32_t iface = 0;
-	int opt, fd, one = 1, port = 22, s;
+	int opt, fd, one = 1, i;
 	struct sockaddr_in sa = { 0 };
 	struct ip_mreq mreq;
 	uint8_t buf[PKT_MAX];
 
-	memset(&c, 0, sizeof(c));
-	while ((opt = getopt(argc, argv, "n:s:p:a:i:")) != -1) {
+	while ((opt = getopt(argc, argv, "c:n:a:i:")) != -1) {
 		switch (opt) {
+		case 'c': conf = optarg; break;
 		case 'n': host = optarg; break;
-		case 's': label = optarg; break;
-		case 'p': port = atoi(optarg); break;
 		case 'a': if (inet_pton(AF_INET, optarg, &c.ip) != 1) return 1; break;
 		case 'i': if (inet_pton(AF_INET, optarg, &iface) != 1) return 1; break;
 		default:
-			fprintf(stderr, "usage: %s [-n host.local] [-s label] [-p port] [-a ipv4] [-i iface_ipv4]\n", argv[0]);
+			fprintf(stderr, "usage: %s -c services.conf [-n host.local] [-a ipv4] [-i iface_ipv4]\n", argv[0]);
 			return 1;
 		}
 	}
-	if (port <= 0 || port > 65535) {
-		fprintf(stderr, "mdns-announce: bad port\n");
+	if (!conf) {
+		fprintf(stderr, "mdns-announce: -c services.conf is required\n");
 		return 1;
 	}
 	if (!iface)
@@ -256,12 +318,11 @@ int main(int argc, char **argv)
 		fprintf(stderr, "mdns-announce: no IPv4 address found\n");
 		return 1;
 	}
-
 	snprintf(c.host, sizeof(c.host), "%s", host);
-	snprintf(c.label, sizeof(c.label), "%s", label);
-	for (s = 0; s < NSVC; s++)
-		snprintf(c.inst[s], sizeof(c.inst[s]), "%s.%s", label, service_types[s]);
-	c.port = (uint16_t)port;
+	if (load_config(&c, conf) < 0) {
+		fprintf(stderr, "mdns-announce: no services in %s\n", conf);
+		return 1;
+	}
 
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (fd < 0) {
@@ -296,17 +357,19 @@ int main(int argc, char **argv)
 	signal(SIGTERM, on_signal);
 	signal(SIGINT, on_signal);
 
-	printf("mdns-announce: %s, %s on port %d, address %s\n",
-	       c.host, c.label, port, inet_ntoa(*(struct in_addr *)&c.ip));
+	printf("mdns-announce: %s at %s, %d services\n",
+	       c.host, inet_ntoa(*(struct in_addr *)&c.ip), c.nsvc);
+	for (i = 0; i < c.nsvc; i++)
+		printf("  %s port %d %s\n", c.svc[i].inst, c.svc[i].port, c.svc[i].path);
 	fflush(stdout);
 
 	/* Startup announcements: 0s, 1s, 2s, 4s. */
 	{
 		int delays[] = { 0, 1, 2, 4 };
-		for (int i = 0; i < 4 && running; i++) {
-			if (delays[i])
-				sleep(delays[i]);
-			send_announce(fd, &c, 0);
+		for (int k = 0; k < 4 && running; k++) {
+			if (delays[k])
+				sleep(delays[k]);
+			send_all(fd, &c, 0);
 		}
 	}
 
@@ -330,13 +393,13 @@ int main(int argc, char **argv)
 			if ((qtype == T_A || qtype == T_PTR || qtype == T_SRV ||
 			     qtype == T_TXT || qtype == T_ANY) &&
 			    question_matches(qname, &c)) {
-				send_announce(fd, &c, 0);
+				send_all(fd, &c, 0);
 				break;
 			}
 		}
 	}
 
-	send_announce(fd, &c, 1);
+	send_all(fd, &c, 1);
 	close(fd);
 	return 0;
 }

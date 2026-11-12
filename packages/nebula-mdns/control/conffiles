@@ -1,1 +1,2 @@
 /etc/init.d/S42mdns
+/etc/nebula-mdns/services.conf

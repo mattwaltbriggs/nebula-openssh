@@ -6,7 +6,7 @@ soft-float, Linux 4.4.94, glibc 2.29 system):
 | Package | Version | What it does |
 | --- | --- | --- |
 | `openssh-nebula` | 10.6p2-4 | OpenSSH 10.6p2 `sshd` server, plus `ssh`, `ssh-keygen`, `scp`, `sftp-server` |
-| `nebula-mdns` | 1.1-1 | Announces `nebula.local`, SSH and SFTP over mDNS (Bonjour) at startup |
+| `nebula-mdns` | 1.1-1 | Announces `nebula.local` and its services over mDNS (Bonjour) at startup |
 
 Install `openssh-nebula` first. `nebula-mdns` is optional, but it's what lets you use
 `ssh -p 2222 root@nebula.local` and find the pad in Bonjour browsers.
@@ -64,7 +64,7 @@ since they are conffiles. Keep your version of `sshd_config`, and make sure it c
 
 ```sh
 rm -f /etc/init.d/S42mdns      # only if you copied one there by hand
-opkg install /root/nebula-mdns_1.1-1_mipsel-3.4.ipk
+opkg install /root/nebula-mdns_1.2-1_mipsel-3.4.ipk
 ```
 
 ### 4. Start the services
@@ -107,32 +107,45 @@ or `ssh -p 2222 root@<pad-ip>` if mDNS isn't working on your network.
 
 ## nebula.local (mDNS / Bonjour)
 
-`mdns-announce` answers mDNS queries and sends announcements at startup. It publishes:
+`nebula-mdns` announces the host `nebula.local` and a list of services. The list is in
+`/etc/nebula-mdns/services.conf` (a conffile, so your edits survive upgrades):
 
-| Record | Meaning |
+```
+label|type|port|path
+Nebula|_ssh._tcp|@SSH_PORT@|
+Nebula|_sftp-ssh._tcp|@SSH_PORT@|
+Nebula|_sftp._tcp|@SSH_PORT@|
+Nebula Creality|_http._tcp|80|/
+Nebula Fluidd|_http._tcp|4408|/
+Nebula Mainsail|_http._tcp|4409|/
+Nebula Camera|_http._tcp|8080|/?action=stream
+Nebula Camera 2|_http._tcp|8081|/?action=stream
+Nebula Moonraker|_http._tcp|7125|/server/info
+```
+
+`@SSH_PORT@` is replaced at startup with the `Port` setting from `/etc/ssh/sshd_config`, so
+the SSH and SFTP entries follow your SSH config. The path is published as a TXT `path=`
+record, which Bonjour browsers use to build the URL.
+
+To add a service, add a line and restart: `/etc/init.d/S42mdns restart`.
+
+On the Mac, the services show up in these browsers:
+
+| Browse for | Shows |
 | --- | --- |
-| `nebula.local` A `<pad IP>` | The pad's address |
-| `_ssh._tcp.local` PTR `Nebula._ssh._tcp.local` | The SSH service, so Bonjour browsers list the pad |
-| `_sftp-ssh._tcp.local` PTR `Nebula._sftp-ssh._tcp.local` | SFTP over SSH, the type Avahi and many Linux file managers use |
-| `_sftp._tcp.local` PTR `Nebula._sftp._tcp.local` | SFTP under the generic `_sftp` name |
-| `<service>.local` SRV port 2222, target `nebula.local` | Where SSH and SFTP are listening (one record per service) |
-| `<service>.local` TXT (empty) | Required by the protocol |
+| `_ssh._tcp` | SSH access, `ssh -p 2222 root@nebula.local` |
+| `_sftp-ssh._tcp`, `_sftp._tcp` | SFTP over SSH |
+| `_http._tcp` | The Creality, Fluidd, and Mainsail web UIs, both cameras, and Moonraker |
 
-The SSH port comes from `Port` in `/etc/ssh/sshd_config`, so the advertised port follows
-your config. It falls back to 22 if the line is missing.
-
-Test it from the Mac:
+Test from the Mac with:
 
 ```sh
 dns-sd -G v4 nebula.local                  # address
-dns-sd -B _ssh._tcp local                  # browse for SSH services
-dns-sd -B _sftp-ssh._tcp local             # browse for SFTP (over SSH) services
-dns-sd -B _sftp._tcp local                 # browse for generic SFTP services
-dns-sd -L Nebula _ssh._tcp local           # host and port for the pad
+dns-sd -B _http._tcp local                 # browse for web UIs, cameras, Moonraker
+dns-sd -L "Nebula Fluidd" _http._tcp local # host, port and path for one service
 ```
 
-To change the name or label, edit `HOST` and `LABEL` in `/etc/init.d/S42mdns`. To run it by
-hand: `/usr/sbin/mdns-announce -n <name>.local -s <label> -p <port> [-a <ipv4>] [-i <ipv4>]`.
+To run it by hand: `/usr/sbin/mdns-announce -c <config> [-n <host>.local] [-a <ipv4>] [-i <ipv4>]`.
 
 ## Known limitations
 
@@ -144,6 +157,8 @@ hand: `/usr/sbin/mdns-announce -n <name>.local -s <label> -p <port> [-a <ipv4>] 
   one active interface, pass `-i <ipv4>` in `/etc/init.d/S42mdns` to choose.
 - `mdns-announce` was tested against macOS `dns-sd` from a development Mac. It hasn't been
   checked on the pad's network yet.
+- The Moonraker entry points at its API, not a web page, so a browser opening it shows JSON.
+- Port 9999 is still unidentified and isn't announced.
 
 ## Building from source
 

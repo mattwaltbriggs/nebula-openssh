@@ -2,8 +2,9 @@
 
 MDNS=/usr/sbin/mdns-announce
 SSHD_CONF=/etc/ssh/sshd_config
+TEMPLATE=/etc/nebula-mdns/services.conf
+RUN=/var/run/mdns-services.conf
 HOST=nebula.local
-LABEL=Nebula
 PID=/var/run/mdns-announce.pid
 
 start() {
@@ -14,7 +15,8 @@ start() {
 	fi
 	PORT=`awk '/^Port /{print $2}' $SSHD_CONF 2>/dev/null | tail -1`
 	PORT=${PORT:-22}
-	$MDNS -n $HOST -s $LABEL -p $PORT >/dev/null 2>&1 &
+	sed "s/@SSH_PORT@/$PORT/g" $TEMPLATE > $RUN
+	$MDNS -c $RUN -n $HOST >/dev/null 2>&1 &
 	echo $! > $PID
 	}
 
