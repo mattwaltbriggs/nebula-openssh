@@ -6,7 +6,7 @@ soft-float, Linux 4.4.94, glibc 2.29 system):
 | Package | Version | What it does |
 | --- | --- | --- |
 | `openssh-nebula` | 10.6p2-4 | OpenSSH 10.6p2 `sshd` server, plus `ssh`, `ssh-keygen`, `scp`, `sftp-server` |
-| `nebula-mdns` | 1.1-1 | Announces `nebula.local` and its services over mDNS (Bonjour) at startup |
+| `nebula-mdns` | 1.2-1 | Announces `nebula.local` and its services over mDNS (Bonjour) at startup |
 
 Install `openssh-nebula` first. `nebula-mdns` is optional, but it's what lets you use
 `ssh -p 2222 root@nebula.local` and find the pad in Bonjour browsers.
