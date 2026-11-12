@@ -1,19 +1,26 @@
 # nebula-openssh
 
-OpenSSH 10.6p2 for the **Nebula pad** (Ingenic X2000 / XBurst2, MIPS32r2, little-endian,
-soft-float, Linux 4.4.94, glibc 2.29 system). Provides a working `sshd` server plus the
-`ssh`, `ssh-keygen`, `scp` and `sftp-server` clients, packaged for opkg.
+Packages for the **Nebula pad** (Ingenic X2000 / XBurst2, MIPS32r2, little-endian,
+soft-float, Linux 4.4.94, glibc 2.29 system):
 
-## What's in it
+| Package | Version | What it does |
+| --- | --- | --- |
+| `openssh-nebula` | 10.6p2-4 | OpenSSH 10.6p2 `sshd` server, plus `ssh`, `ssh-keygen`, `scp`, `sftp-server` |
+| `nebula-mdns` | 1.0-1 | Announces `nebula.local` and the SSH service over mDNS (Bonjour) at startup |
+
+Install `openssh-nebula` first. `nebula-mdns` is optional, but it's what lets you use
+`ssh -p 2222 root@nebula.local` and find the pad in Bonjour browsers.
+
+## What's in the repo
 
 | Path | Purpose |
 | --- | --- |
-| `release/openssh-nebula_10.6p2-3_mipsel-3.4.ipk` | The installable opkg package (also attached to the GitHub release) |
-| `init/S41sshd`, `init/S42mdns` | Boot scripts for the firmware's `/etc/init.d` runner |
-| `mdns/mdns-announce.c` | Small mDNS responder that announces `nebula.local` |
-| `package/` | opkg control files, boot scripts, and the config file the package installs |
-| `build/build.sh` | Reproduces the build from upstream source tarballs |
-| `make-ipk.py` | Assembles the `.ipk` from `package/` |
+| `release/*.ipk` | Installable opkg packages (also attached to the GitHub release) |
+| `packages/openssh-nebula/` | Control files, `S41sshd` boot script, `sshd_config` |
+| `packages/nebula-mdns/` | Control files and the `S42mdns` boot script |
+| `mdns/mdns-announce.c` | Source for the mDNS responder used by `nebula-mdns` |
+| `build/build.sh` | Rebuilds everything from upstream source tarballs |
+| `make-ipk.py` | Builds the `.ipk` files from `packages/` |
 
 ## Why it's built this way
 
@@ -22,39 +29,45 @@ depend on the pad's glibc. OpenSSL is built without threads or assembly, and Ope
 its syscall sandbox. Two device-specific findings drove these choices:
 
 - The kernel rejects the seccomp sandbox (`prctl(PR_SET_SECCOMP): Invalid argument`).
-- The hard-float musl build crashed `sshd-auth` after login, so the package uses soft-float.
+- The hard-float musl build crashed `sshd-auth` after login, so the packages use soft-float.
 
-The package is configured with `--without-pam`, so there is no PAM and no keyboard-interactive
+The SSH package is configured with `--without-pam`, so there is no PAM and no keyboard-interactive
 backend. `KbdInteractiveAuthentication no` is set in the default config; leaving it on causes
 a crash after the password prompt.
 
 ## Install
 
-### 1. Download the package
+### 1. Download the packages
 
-Download `openssh-nebula_10.6p2-3_mipsel-3.4.ipk` from the
-[latest release](https://github.com/mattwaltbriggs/nebula-openssh/releases/latest) and copy it
-to the pad over sftp, e.g. to `/root/`.
+Download the `.ipk` files from the
+[latest release](https://github.com/mattwaltbriggs/nebula-openssh/releases/latest) and copy
+them to the pad over sftp, e.g. to `/root/`.
 
-### 2. Install with opkg (on the pad)
+### 2. Install openssh-nebula
 
 If you copied `S41sshd` into `/etc/init.d` by hand earlier, remove it first, since the package
 installs its own copy and opkg won't overwrite a file it doesn't own:
 
 ```sh
 rm -f /etc/init.d/S41sshd
-opkg install /root/openssh-nebula_10.6p2-3_mipsel-3.4.ipk
+opkg install /root/openssh-nebula_10.6p2-4_mipsel-3.4.ipk
 ```
 
-The package's postinst creates the `sshd` user (uid/gid 74), `/var/empty`, and an ed25519
-host key in `/etc/ssh/` if one isn't there already. It installs the boot scripts
-`/etc/init.d/S41sshd` and `/etc/init.d/S42mdns`.
+The postinst creates the `sshd` user (uid/gid 74), `/var/empty`, and an ed25519 host key in
+`/etc/ssh/` if one isn't there already.
 
-When upgrading from an earlier build, opkg asks before overwriting `/etc/ssh/sshd_config`
-and the init scripts, since they are conffiles. Keep your version of `sshd_config`, and make
-sure it contains `KbdInteractiveAuthentication no`.
+When upgrading, opkg asks before overwriting `/etc/ssh/sshd_config` and the init script,
+since they are conffiles. Keep your version of `sshd_config`, and make sure it contains
+`KbdInteractiveAuthentication no`.
 
-### 3. Start the services
+### 3. Install nebula-mdns (optional)
+
+```sh
+rm -f /etc/init.d/S42mdns      # only if you copied one there by hand
+opkg install /root/nebula-mdns_1.0-1_mipsel-3.4.ipk
+```
+
+### 4. Start the services
 
 ```sh
 /etc/init.d/S41sshd start
@@ -68,10 +81,11 @@ Use the full path `/usr/sbin/sshd` if you run it by hand. On the Nebula, `/opt/s
 (Entware's OpenSSH) comes first on `PATH` and would run instead. The init script already uses
 the full path.
 
-### 4. Start at boot
+### 5. Start at boot
 
 The firmware's `/etc/init.d/rcS` runs every `S??*` script in `/etc/init.d` with `start` at
-boot. Each script refuses to start a second copy if one is already running.
+boot. Each script refuses to start a second copy if one is already running. `S42mdns` runs
+after `S41sshd`, so the SSH service is up when it's announced.
 
 Manage a service with:
 
@@ -83,9 +97,7 @@ Manage a service with:
 Don't put these scripts in `/opt/etc/init.d`. Entware's `rc.unslung` isn't running on this
 device, so those scripts don't run at boot anyway, and Entware's `S40sshd` starts its own sshd.
 
-### 5. Connect
-
-From another machine:
+### 6. Connect
 
 ```sh
 ssh -p 2222 root@nebula.local
@@ -93,66 +105,50 @@ ssh -p 2222 root@nebula.local
 
 or `ssh -p 2222 root@<pad-ip>` if mDNS isn't working on your network.
 
-## nebula.local (mDNS)
+## nebula.local (mDNS / Bonjour)
 
-`S42mdns` starts `mdns-announce`, which answers Bonjour/mDNS queries for `nebula.local` with
-the pad's IPv4 address. It sends announcements at startup, so the name resolves a few seconds
-after boot. It is a single-purpose responder: it doesn't implement service discovery, and it
-doesn't rename the pad's hostname.
+`mdns-announce` answers mDNS queries and sends announcements at startup. It publishes:
 
-Test it from the Mac with:
+| Record | Meaning |
+| --- | --- |
+| `nebula.local` A `<pad IP>` | The pad's address |
+| `_ssh._tcp.local` PTR `Nebula._ssh._tcp.local` | The SSH service, so Bonjour browsers list the pad |
+| `Nebula._ssh._tcp.local` SRV port 2222, target `nebula.local` | Where SSH is listening |
+| `Nebula._ssh._tcp.local` TXT (empty) | Required by the protocol |
+
+The SSH port comes from `Port` in `/etc/ssh/sshd_config`, so the advertised port follows
+your config. It falls back to 22 if the line is missing.
+
+Test it from the Mac:
 
 ```sh
-dns-sd -G v4 nebula.local
+dns-sd -G v4 nebula.local                  # address
+dns-sd -B _ssh._tcp local                  # browse for SSH services
+dns-sd -L Nebula _ssh._tcp local           # host and port for the pad
 ```
 
-or `ping nebula.local`.
-
-To announce a different name or IP, edit the `NAME` variable in `/etc/init.d/S42mdns`, or run
-`/usr/sbin/mdns-announce -n <name>.local -a <ipv4>` by hand.
-
-## Configuration
-
-The default `/etc/ssh/sshd_config`:
-
-```
-Port 2222
-ListenAddress 0.0.0.0
-HostKey /etc/ssh/ssh_host_ed25519_key
-PermitRootLogin yes
-PubkeyAuthentication yes
-PasswordAuthentication yes
-KbdInteractiveAuthentication no
-Subsystem sftp /usr/libexec/sftp-server
-PidFile /var/run/sshd.pid
-```
-
-- **Password login is on.** Add your public key to `/root/.ssh/authorized_keys`, then set
-  `PasswordAuthentication no` and restart.
-- **Port 2222** avoids clashing with Entware's sshd on port 22.
-- **Debug output:** don't run `sshd -ddd` in the foreground for normal use. It sends debug lines
-  to the connected client.
+To change the name or label, edit `HOST` and `LABEL` in `/etc/init.d/S42mdns`. To run it by
+hand: `/usr/sbin/mdns-announce -n <name>.local -s <label> -p <port> [-a <ipv4>] [-i <ipv4>]`.
 
 ## Known limitations
 
 - No PAM, no syslog-based auth auditing, no seccomp sandbox.
+- SFTP has had only a basic check.
+- The packages aren't signed.
 - `mdns-announce` uses the first non-loopback IPv4 interface it finds. If the pad has more than
-  one active network interface, pass `-i <ipv4>` in `/etc/init.d/S42mdns` to choose.
-- `mdns-announce` is tested only against macOS's `dns-sd` from a development Mac, not yet on the pad's network.
-- Not tested with SFTP beyond a basic check.
-- The package isn't signed.
+  one active interface, pass `-i <ipv4>` in `/etc/init.d/S42mdns` to choose.
+- `mdns-announce` was tested against macOS `dns-sd` from a development Mac. It hasn't been
+  checked on the pad's network yet.
 
 ## Building from source
 
 Requires [Zig](https://ziglang.org/) 0.17.x (`brew install zig` on macOS), python3, and curl.
 
 ```sh
-./build/build.sh          # fetches zlib, OpenSSL, OpenSSH and builds static MIPS binaries
-python3 make-ipk.py       # writes openssh-nebula_10.6p2-2_mipsel-3.4.ipk
+./build/build.sh    # fetches zlib, OpenSSL, OpenSSH; builds static MIPS binaries and both .ipk files
 ```
 
-The build works in `~/nebula-build` by default (set `WORK=` to change that). Start from a fresh
-clone, since the script expects `package/data/` to be empty of binaries.
+The build works in `~/nebula-build` by default (set `WORK=` to change that).
 
 ## Licenses
 

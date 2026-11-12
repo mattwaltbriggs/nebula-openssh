@@ -1,9 +1,14 @@
 /*
- * mdns-announce: announce a single A record over mDNS (Bonjour), e.g.
- * nebula.local -> the pad's IPv4 address. Answers queries for that name
- * and sends unsolicited announcements at startup.
+ * mdns-announce: announce a host name and an SSH service over mDNS (Bonjour).
  *
- * Usage: mdns-announce [-n name.local] [-a ipv4] [-i iface_ipv4]
+ * Publishes:
+ *   host.local                       A     <ipv4>
+ *   _ssh._tcp.local                  PTR   <label>._ssh._tcp.local
+ *   <label>._ssh._tcp.local          SRV   <port> host.local
+ *   <label>._ssh._tcp.local          TXT   (empty)
+ *   _services._dns-sd._udp.local     PTR   _ssh._tcp.local
+ *
+ * Usage: mdns-announce [-n host.local] [-s label] [-p port] [-a ipv4] [-i iface_ipv4]
  */
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -15,13 +20,31 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #define MDNS_PORT 5353
 #define MDNS_GROUP "224.0.0.251"
-#define TTL 120
+#define HOST_TTL 120
+#define SVC_TTL 4500
+#define PKT_MAX 1024
+
+#define T_A 1
+#define T_PTR 12
+#define T_TXT 16
+#define T_SRV 33
+#define T_ANY 255
+
+struct cfg {
+	char host[256];      /* host.local */
+	char svc[64];        /* _ssh._tcp.local */
+	char inst[300];      /* label._ssh._tcp.local */
+	char dns_sd[64];     /* _services._dns-sd._udp.local */
+	uint32_t ip;         /* network order */
+	uint16_t port;
+};
 
 static volatile sig_atomic_t running = 1;
 static void on_signal(int sig) { (void)sig; running = 0; }
@@ -44,54 +67,116 @@ static int encode_name(uint8_t *buf, const char *name)
 	return len;
 }
 
-static int name_matches(const uint8_t *pkt, int off, int end, const char *name)
+/* Reads a (possibly compressed) question name into out as dotted text.
+ * Returns the offset just past the name, or -1 on malformed input. */
+static int parse_qname(const uint8_t *pkt, int n, int off, char *out, int outlen)
 {
-	const char *p = name;
-	while (off < end) {
-		int l = pkt[off++];
-		if (l == 0)
-			return *p == 0;
-		if ((l & 0xC0) || off + l > end)
-			return 0;
-		const char *dot = strchr(p, '.');
-		int nl = dot ? (int)(dot - p) : (int)strlen(p);
-		if (nl != l || strncasecmp((const char *)pkt + off, p, l) != 0)
-			return 0;
-		off += l;
-		p = dot ? dot + 1 : p + nl;
+	int len = 0, hops = 0, end = -1;
+	out[0] = 0;
+	for (;;) {
+		int l;
+		if (off >= n)
+			return -1;
+		l = pkt[off];
+		if (l == 0) {
+			if (end < 0)
+				end = off + 1;
+			break;
+		}
+		if ((l & 0xC0) == 0xC0) {
+			if (off + 1 >= n || ++hops > 16)
+				return -1;
+			if (end < 0)
+				end = off + 2;
+			off = ((l & 0x3F) << 8) | pkt[off + 1];
+			continue;
+		}
+		if (l > 63 || off + 1 + l > n)
+			return -1;
+		if (len) {
+			if (len + 1 >= outlen)
+				return -1;
+			out[len++] = '.';
+		}
+		if (len + l >= outlen)
+			return -1;
+		memcpy(out + len, pkt + off + 1, l);
+		len += l;
+		out[len] = 0;
+		off += l + 1;
 	}
-	return 0;
+	return end;
 }
 
-static int build_response(uint8_t *buf, const char *name, uint32_t ip, int ttl)
+static int add_rr(uint8_t *buf, int n, const char *name, uint16_t type,
+		  uint16_t cls, uint32_t ttl, const uint8_t *rd, int rdlen)
 {
-	int n = 0;
-	buf[n++] = 0; buf[n++] = 0;          /* id */
-	buf[n++] = 0x84; buf[n++] = 0x00;    /* flags: response, authoritative */
-	buf[n++] = 0; buf[n++] = 0;          /* qdcount */
-	buf[n++] = 0; buf[n++] = 1;          /* ancount */
-	buf[n++] = 0; buf[n++] = 0;          /* nscount */
-	buf[n++] = 0; buf[n++] = 0;          /* arcount */
 	n += encode_name(buf + n, name);
-	buf[n++] = 0; buf[n++] = 1;          /* type A */
-	buf[n++] = 0x80; buf[n++] = 1;       /* class IN, cache-flush */
+	buf[n++] = type >> 8;   buf[n++] = type & 0xff;
+	buf[n++] = cls >> 8;    buf[n++] = cls & 0xff;
 	buf[n++] = (ttl >> 24) & 0xff; buf[n++] = (ttl >> 16) & 0xff;
 	buf[n++] = (ttl >> 8) & 0xff;  buf[n++] = ttl & 0xff;
-	buf[n++] = 0; buf[n++] = 4;          /* rdlength */
-	memcpy(buf + n, &ip, 4);             /* ip is already network order */
-	n += 4;
+	buf[n++] = rdlen >> 8;  buf[n++] = rdlen & 0xff;
+	memcpy(buf + n, rd, rdlen);
+	return n + rdlen;
+}
+
+/* Builds one response with every record. goodbye=1 sends TTL 0 for all. */
+static int build_announce(uint8_t *buf, const struct cfg *c, int goodbye)
+{
+	uint8_t rd[300];
+	int n = 12, rdn, count = 0;
+	uint32_t httl = goodbye ? 0 : HOST_TTL;
+	uint32_t sttl = goodbye ? 0 : SVC_TTL;
+
+	memset(buf, 0, 12);
+	buf[2] = 0x84;                       /* response, authoritative */
+
+	memcpy(rd, &c->ip, 4);
+	n = add_rr(buf, n, c->host, T_A, 0x8001, httl, rd, 4);
+	count++;
+
+	rdn = encode_name(rd, c->inst);
+	n = add_rr(buf, n, c->svc, T_PTR, 0x0001, sttl, rd, rdn);
+	count++;
+
+	memset(rd, 0, 4);
+	rd[4] = c->port >> 8;
+	rd[5] = c->port & 0xff;
+	rdn = 6 + encode_name(rd + 6, c->host);
+	n = add_rr(buf, n, c->inst, T_SRV, 0x8001, httl, rd, rdn);
+	count++;
+
+	rd[0] = 0;
+	n = add_rr(buf, n, c->inst, T_TXT, 0x8001, sttl, rd, 1);
+	count++;
+
+	rdn = encode_name(rd, c->svc);
+	n = add_rr(buf, n, c->dns_sd, T_PTR, 0x0001, sttl, rd, rdn);
+	count++;
+
+	buf[6] = count >> 8;
+	buf[7] = count & 0xff;
 	return n;
 }
 
-static void send_response(int fd, const char *name, uint32_t ip, int ttl)
+static void send_announce(int fd, const struct cfg *c, int goodbye)
 {
-	uint8_t buf[512];
+	uint8_t buf[PKT_MAX];
 	struct sockaddr_in dst = { 0 };
-	int n = build_response(buf, name, ip, ttl);
+	int n = build_announce(buf, c, goodbye);
 	dst.sin_family = AF_INET;
 	dst.sin_port = htons(MDNS_PORT);
 	inet_pton(AF_INET, MDNS_GROUP, &dst.sin_addr);
 	sendto(fd, buf, n, 0, (struct sockaddr *)&dst, sizeof(dst));
+}
+
+static int question_matches(const char *qname, const struct cfg *c)
+{
+	return strcasecmp(qname, c->host) == 0 ||
+	       strcasecmp(qname, c->svc) == 0 ||
+	       strcasecmp(qname, c->inst) == 0 ||
+	       strcasecmp(qname, c->dns_sd) == 0;
 }
 
 static uint32_t detect_ipv4(void)
@@ -117,31 +202,46 @@ static uint32_t detect_ipv4(void)
 
 int main(int argc, char **argv)
 {
-	const char *name = "nebula.local";
-	uint32_t ip = 0, iface = 0;
-	int opt, fd, one = 1;
+	struct cfg c;
+	const char *label = "Nebula";
+	const char *host = "nebula.local";
+	uint32_t iface = 0;
+	int opt, fd, one = 1, port = 22;
 	struct sockaddr_in sa = { 0 };
 	struct ip_mreq mreq;
-	uint8_t buf[512];
+	uint8_t buf[PKT_MAX];
 
-	while ((opt = getopt(argc, argv, "n:a:i:")) != -1) {
+	memset(&c, 0, sizeof(c));
+	while ((opt = getopt(argc, argv, "n:s:p:a:i:")) != -1) {
 		switch (opt) {
-		case 'n': name = optarg; break;
-		case 'a': if (inet_pton(AF_INET, optarg, &ip) != 1) return 1; break;
+		case 'n': host = optarg; break;
+		case 's': label = optarg; break;
+		case 'p': port = atoi(optarg); break;
+		case 'a': if (inet_pton(AF_INET, optarg, &c.ip) != 1) return 1; break;
 		case 'i': if (inet_pton(AF_INET, optarg, &iface) != 1) return 1; break;
 		default:
-			fprintf(stderr, "usage: %s [-n name.local] [-a ipv4] [-i iface_ipv4]\n", argv[0]);
+			fprintf(stderr, "usage: %s [-n host.local] [-s label] [-p port] [-a ipv4] [-i iface_ipv4]\n", argv[0]);
 			return 1;
 		}
 	}
+	if (port <= 0 || port > 65535) {
+		fprintf(stderr, "mdns-announce: bad port\n");
+		return 1;
+	}
 	if (!iface)
 		iface = detect_ipv4();
-	if (!ip)
-		ip = iface;
-	if (!ip) {
+	if (!c.ip)
+		c.ip = iface;
+	if (!c.ip) {
 		fprintf(stderr, "mdns-announce: no IPv4 address found\n");
 		return 1;
 	}
+
+	snprintf(c.host, sizeof(c.host), "%s", host);
+	snprintf(c.svc, sizeof(c.svc), "_ssh._tcp.local");
+	snprintf(c.inst, sizeof(c.inst), "%s._ssh._tcp.local", label);
+	snprintf(c.dns_sd, sizeof(c.dns_sd), "_services._dns-sd._udp.local");
+	c.port = (uint16_t)port;
 
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (fd < 0) {
@@ -168,22 +268,25 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &iface, sizeof(iface));
-	int ttl255 = 255;
-	setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl255, sizeof(ttl255));
+	{
+		int ttl255 = 255;
+		setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl255, sizeof(ttl255));
+	}
 
 	signal(SIGTERM, on_signal);
 	signal(SIGINT, on_signal);
 
-	printf("mdns-announce: %s -> %s\n", name, inet_ntoa(*(struct in_addr *)&ip));
+	printf("mdns-announce: %s, %s on port %d, address %s\n",
+	       c.host, c.inst, port, inet_ntoa(*(struct in_addr *)&c.ip));
 	fflush(stdout);
 
-	/* Startup announcements: 1s, 2s, 4s apart. */
+	/* Startup announcements: 0s, 1s, 2s, 4s. */
 	{
 		int delays[] = { 0, 1, 2, 4 };
 		for (int i = 0; i < 4 && running; i++) {
 			if (delays[i])
 				sleep(delays[i]);
-			send_response(fd, name, ip, TTL);
+			send_announce(fd, &c, 0);
 		}
 	}
 
@@ -191,31 +294,29 @@ int main(int argc, char **argv)
 		struct sockaddr_in from;
 		socklen_t flen = sizeof(from);
 		ssize_t n = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr *)&from, &flen);
-		if (n < 12)
+		int qd, off, q;
+		if (n < 12 || (buf[2] & 0x80))  /* short, or a response: ignore */
 			continue;
-		if (buf[2] & 0x80)          /* response: ignore */
-			continue;
-		int qd = (buf[4] << 8) | buf[5];
-		int off = 12;
-		for (int q = 0; q < qd && off < n; q++) {
-			int start = off;
-			while (off < n && buf[off] != 0) {
-				if (buf[off] & 0xC0) { off += 2; goto next; }
-				off += buf[off] + 1;
-			}
-			off++;               /* root label */
-		next:
-			if (off + 4 > n)
+		qd = (buf[4] << 8) | buf[5];
+		off = 12;
+		for (q = 0; q < qd; q++) {
+			char qname[256];
+			int qtype;
+			off = parse_qname(buf, (int)n, off, qname, sizeof(qname));
+			if (off < 0 || off + 4 > n)
 				break;
-			int qtype = (buf[off] << 8) | buf[off + 1];
-			if ((qtype == 1 || qtype == 255) && name_matches(buf, start, n, name))
-				send_response(fd, name, ip, TTL);
+			qtype = (buf[off] << 8) | buf[off + 1];
 			off += 4;
+			if ((qtype == T_A || qtype == T_PTR || qtype == T_SRV ||
+			     qtype == T_TXT || qtype == T_ANY) &&
+			    question_matches(qname, &c)) {
+				send_announce(fd, &c, 0);
+				break;
+			}
 		}
 	}
 
-	/* Goodbye: TTL 0 so clients drop the record on shutdown. */
-	send_response(fd, name, ip, 0);
+	send_announce(fd, &c, 1);
 	close(fd);
 	return 0;
 }

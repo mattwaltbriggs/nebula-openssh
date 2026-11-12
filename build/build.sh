@@ -53,14 +53,17 @@ make -j8 LDFLAGS="-L. -Lopenbsd-compat/ -L$PREFIX/lib -static -s" \
 	LDFLAGS_NOPIE="-L. -Lopenbsd-compat/ -L$PREFIX/lib -static -s" \
 	ssh sshd ssh-keygen sftp-server scp sshd-session sshd-auth
 
-# mdns-announce (plain C, no libc features beyond musl)
+# mdns-announce (plain C; musl libc only)
 "$BIN/mips-cc" -static -s -O2 -Wall -o "$HERE/mdns/mdns-announce" "$HERE/mdns/mdns-announce.c"
 
-# Stage binaries into the package tree and build the .ipk
-D="$HERE/package/data"
-mkdir -p "$D/usr/sbin" "$D/usr/bin" "$D/usr/libexec"
-cp sshd "$D/usr/sbin/"
-cp ssh ssh-keygen scp "$D/usr/bin/"
-cp sftp-server sshd-session sshd-auth "$D/usr/libexec/"
-cp "$HERE/mdns/mdns-announce" "$D/usr/sbin/"
-echo "Binaries staged. Now run: python3 $HERE/make-ipk.py"
+# Stage binaries into the package trees
+P="$HERE/packages"
+mkdir -p "$P/openssh-nebula/data/usr/sbin" "$P/openssh-nebula/data/usr/bin" \
+	"$P/openssh-nebula/data/usr/libexec" "$P/nebula-mdns/data/usr/sbin"
+cp sshd "$P/openssh-nebula/data/usr/sbin/"
+cp ssh ssh-keygen scp "$P/openssh-nebula/data/usr/bin/"
+cp sftp-server sshd-session sshd-auth "$P/openssh-nebula/data/usr/libexec/"
+cp "$HERE/mdns/mdns-announce" "$P/nebula-mdns/data/usr/sbin/"
+
+python3 "$HERE/make-ipk.py"
+echo "Packages written to $HERE/release/"

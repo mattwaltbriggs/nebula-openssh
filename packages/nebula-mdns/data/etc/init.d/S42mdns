@@ -1,16 +1,20 @@
 #!/bin/sh
 
 MDNS=/usr/sbin/mdns-announce
-NAME=nebula.local
+SSHD_CONF=/etc/ssh/sshd_config
+HOST=nebula.local
+LABEL=Nebula
 PID=/var/run/mdns-announce.pid
 
 start() {
-	echo "starting mdns-announce ($NAME)..."
+	echo "starting mdns-announce ($HOST)..."
 	if [ -f $PID ] && kill -0 `cat $PID` 2>/dev/null; then
 		echo "mdns-announce already running"
 		return
 	fi
-	$MDNS -n $NAME >/dev/null 2>&1 &
+	PORT=`awk '/^Port /{print $2}' $SSHD_CONF 2>/dev/null | tail -1`
+	PORT=${PORT:-22}
+	$MDNS -n $HOST -s $LABEL -p $PORT >/dev/null 2>&1 &
 	echo $! > $PID
 	}
 
