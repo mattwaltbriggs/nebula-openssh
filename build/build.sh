@@ -53,10 +53,14 @@ make -j8 LDFLAGS="-L. -Lopenbsd-compat/ -L$PREFIX/lib -static -s" \
 	LDFLAGS_NOPIE="-L. -Lopenbsd-compat/ -L$PREFIX/lib -static -s" \
 	ssh sshd ssh-keygen sftp-server scp sshd-session sshd-auth
 
+# mdns-announce (plain C, no libc features beyond musl)
+"$BIN/mips-cc" -static -s -O2 -Wall -o "$HERE/mdns/mdns-announce" "$HERE/mdns/mdns-announce.c"
+
 # Stage binaries into the package tree and build the .ipk
 D="$HERE/package/data"
 mkdir -p "$D/usr/sbin" "$D/usr/bin" "$D/usr/libexec"
 cp sshd "$D/usr/sbin/"
 cp ssh ssh-keygen scp "$D/usr/bin/"
 cp sftp-server sshd-session sshd-auth "$D/usr/libexec/"
+cp "$HERE/mdns/mdns-announce" "$D/usr/sbin/"
 echo "Binaries staged. Now run: python3 $HERE/make-ipk.py"

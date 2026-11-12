@@ -1,1 +1,3 @@
 /etc/ssh/sshd_config
+/etc/init.d/S41sshd
+/etc/init.d/S42mdns

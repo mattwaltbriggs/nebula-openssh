@@ -1,7 +1,7 @@
 import os, subprocess, sys, tarfile, io, tempfile
 root = os.path.dirname(os.path.abspath(__file__))
 pkg = os.path.join(root, "package")
-out = os.path.join(root, "openssh-nebula_10.6p2-2_mipsel-3.4.ipk")
+out = os.path.join(root, "openssh-nebula_10.6p2-3_mipsel-3.4.ipk")
 
 def tgz(src):
     buf = io.BytesIO()

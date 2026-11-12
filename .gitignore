@@ -3,3 +3,4 @@ release/*.ipk
 package/data/usr/
 package/data/etc/ssh/ssh_host_*
 build/bin/*.o
+mdns/mdns-announce
