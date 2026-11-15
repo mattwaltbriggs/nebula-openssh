@@ -7,6 +7,7 @@ soft-float, Linux 4.4.94, glibc 2.29 system):
 | --- | --- | --- |
 | `openssh-nebula` | 10.6p2-4 | OpenSSH 10.6p2 `sshd` server, plus `ssh`, `ssh-keygen`, `scp`, `sftp-server` |
 | `nebula-mdns` | 1.2-1 | Announces `nebula.local` and its services over mDNS (Bonjour) at startup |
+| `nebula-printerwatch` | 1.0-1 | Watches the 3D printer motherboard connection and primes the pad for printing when it powers back on |
 
 Install `openssh-nebula` first. `nebula-mdns` is optional, but it's what lets you use
 `ssh -p 2222 root@nebula.local` and find the pad in Bonjour browsers.
@@ -18,6 +19,7 @@ Install `openssh-nebula` first. `nebula-mdns` is optional, but it's what lets yo
 | `release/*.ipk` | Installable opkg packages (also attached to the GitHub release) |
 | `packages/openssh-nebula/` | Control files, `S41sshd` boot script, `sshd_config` |
 | `packages/nebula-mdns/` | Control files and the `S42mdns` boot script |
+| `packages/nebula-printerwatch/` | Control files, `S43printerwatch` boot script, watcher and prime config |
 | `mdns/mdns-announce.c` | Source for the mDNS responder used by `nebula-mdns` |
 | `build/build.sh` | Rebuilds everything from upstream source tarballs |
 | `make-ipk.py` | Builds the `.ipk` files from `packages/` |
@@ -67,11 +69,18 @@ rm -f /etc/init.d/S42mdns      # only if you copied one there by hand
 opkg install /root/nebula-mdns_1.2-1_mipsel-3.4.ipk
 ```
 
+### 3. Install nebula-printerwatch (optional, depends on the printer services)
+
+```sh
+opkg install /root/nebula-printerwatch_1.0-1_mipsel-3.4.ipk
+```
+
 ### 4. Start the services
 
 ```sh
 /etc/init.d/S41sshd start
 /etc/init.d/S42mdns start
+/etc/init.d/S43printerwatch start
 ```
 
 Check the SSH listener with `grep ':08AE ' /proc/net/tcp` (port 2222 in hex; state `0A`
@@ -85,13 +94,15 @@ the full path.
 
 The firmware's `/etc/init.d/rcS` runs every `S??*` script in `/etc/init.d` with `start` at
 boot. Each script refuses to start a second copy if one is already running. `S42mdns` runs
-after `S41sshd`, so the SSH service is up when it's announced.
+after `S41sshd`, and `S43printerwatch` runs after `S42mdns`, so the SSH service is up before
+the mDNS announcer, which is up before the printer watcher.
 
 Manage a service with:
 
 ```sh
 /etc/init.d/S41sshd start|stop|restart|status
 /etc/init.d/S42mdns start|stop|restart|status
+/etc/init.d/S43printerwatch start|stop|restart|status
 ```
 
 Don't put these scripts in `/opt/etc/init.d`. Entware's `rc.unslung` isn't running on this
@@ -104,6 +115,27 @@ ssh -p 2222 root@nebula.local
 ```
 
 or `ssh -p 2222 root@<pad-ip>` if mDNS isn't working on your network.
+
+## Printer power-cycle watcher (nebula-printerwatch)
+
+`nebula-printerwatch` watches the Moonraker-backed printer connection on the pad and, when the
+printer comes back online after a power cycle of the Ender 3 V3 SE motherboard, fires the
+configured prime action (a G-code command delivered through Moonraker's API).
+
+This replaces the manual step of resetting the pad after switching the motherboard off and on.
+
+The watcher polls Moonraker at `http://127.0.0.1:7125` (override with `MOONRAKER_URL`) every 5
+seconds. It fires once on each offline -> online transition.
+
+The prime action lives in `/etc/printerwatch/prime.conf`:
+
+```
+gcode = G28
+printer = printer
+```
+
+Change `gcode` to whatever priming/arming step you want (for example a prime line or homing
+sequence), and `printer` to the Moonraker printer name if it isn't `printer`.
 
 ## nebula.local (mDNS / Bonjour)
 
@@ -165,10 +197,12 @@ To run it by hand: `/usr/sbin/mdns-announce -c <config> [-n <host>.local] [-a <i
 Requires [Zig](https://ziglang.org/) 0.17.x (`brew install zig` on macOS), python3, and curl.
 
 ```sh
-./build/build.sh    # fetches zlib, OpenSSL, OpenSSH; builds static MIPS binaries and both .ipk files
+./build/build.sh    # fetches zlib, OpenSSL, OpenSSH; builds static MIPS binaries and the .ipk files
 ```
 
-The build works in `~/nebula-build` by default (set `WORK=` to change that).
+The build works in `~/nebula-build` by default (set `WORK=` to change that). The script stages
+the binaries for `openssh-nebula`, the mDNS responder for `nebula-mdns`, and the scripts for
+`nebula-printerwatch`, then writes all three `.ipk` files.
 
 ## Licenses
 

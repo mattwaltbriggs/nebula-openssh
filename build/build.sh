@@ -59,11 +59,14 @@ make -j8 LDFLAGS="-L. -Lopenbsd-compat/ -L$PREFIX/lib -static -s" \
 # Stage binaries into the package trees
 P="$HERE/packages"
 mkdir -p "$P/openssh-nebula/data/usr/sbin" "$P/openssh-nebula/data/usr/bin" \
-	"$P/openssh-nebula/data/usr/libexec" "$P/nebula-mdns/data/usr/sbin"
+	"$P/openssh-nebula/data/usr/libexec" "$P/nebula-mdns/data/usr/sbin" \
+	"$P/nebula-printerwatch/data/etc/init.d" "$P/nebula-printerwatch/data/etc/printerwatch"
 cp sshd "$P/openssh-nebula/data/usr/sbin/"
 cp ssh ssh-keygen scp "$P/openssh-nebula/data/usr/bin/"
 cp sftp-server sshd-session sshd-auth "$P/openssh-nebula/data/usr/libexec/"
 cp "$HERE/mdns/mdns-announce" "$P/nebula-mdns/data/usr/sbin/"
+cp "$P/nebula-printerwatch/data/etc/init.d/S43printerwatch" "$P/nebula-printerwatch/data/etc/init.d/S43printerwatch"
+chmod 755 "$P/nebula-printerwatch/data/etc/init.d/S43printerwatch"
 
-python3 "$HERE/make-ipk.py"
+python3 "$HERE/make-ipk.py" openssh-nebula nebula-mdns nebula-printerwatch
 echo "Packages written to $HERE/release/"

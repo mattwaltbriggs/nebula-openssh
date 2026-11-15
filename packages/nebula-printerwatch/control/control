@@ -1,0 +1,8 @@
+Package: nebula-printerwatch
+Version: 1.0-1
+Architecture: mipsel-3.4
+Maintainer: nebula-build
+Section: utils
+Priority: optional
+Installed-Size: 0
+Description: Watches the 3D printer motherboard connection and primes the pad for printing when it powers back on; statically linked for the Nebula pad

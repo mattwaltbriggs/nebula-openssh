@@ -1,0 +1,40 @@
+#!/bin/sh
+
+WATCH=/etc/printerwatch/watch.py
+PRIME=/etc/printerwatch/prime.conf
+PID=/var/run/printerwatch.pid
+LOG=/var/log/printerwatch.log
+
+start() {
+	echo "starting printerwatch..."
+	if [ -f $PID ] && kill -0 `cat $PID` 2>/dev/null; then
+		echo "printerwatch already running"
+		return
+	fi
+	/usr/bin/python3 /etc/printerwatch/watch.py >> $LOG 2>&1 &
+	echo $! > $PID
+}
+
+stop() {
+	echo "stopping printerwatch..."
+	[ -f $PID ] && kill `cat $PID` 2>/dev/null
+	rm -f $PID
+}
+
+status() {
+	if [ -f $PID ] && kill -0 `cat $PID` 2>/dev/null; then
+		echo "printerwatch is running, PID `cat $PID`"
+	else
+		echo "printerwatch is not running"
+	fi
+}
+
+case "$1" in
+	start)   start ;;
+	stop)    stop ;;
+	restart) stop; sleep 1; start ;;
+	status)  status ;;
+	*)       echo "Usage: $0 (start|stop|restart|status)"; exit 1 ;;
+esac
+
+exit 0
