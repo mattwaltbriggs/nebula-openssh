@@ -117,7 +117,7 @@ def main():
     ok, data = moonraker_get(STATE_PATH)
     ok2, info = moonraker_get(INFO_PATH)
     prev_healthy = ok and ok2 and printer_healthy(data, info)
-    reset_sent = not prev_healthy  # prompt now if starting out unhealthy
+    reset_sent = False
 
     while True:
         ok, data = moonraker_get(STATE_PATH)
