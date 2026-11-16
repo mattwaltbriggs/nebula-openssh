@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Watch the Moonraker-backed printer connection.
 
-Polls Moonraker for the printer state. When the printer transitions from
-offline/unreachable to online (e.g. after the Ender 3 V3 SE motherboard was
-switched off and back on), it fires the configured prime action: a G-code
-command delivered through Moonraker's API.
+Polls Moonraker for the printer / Klippy connection state. When the printer
+transitions from an unhealthy state (errored, closed, or Klippy in shutdown) to
+healthy (Klippy ready and accepting commands) -- e.g. after the Ender 3 V3 SE
+motherboard was switched off and back on -- it fires the configured prime
+action: a G-code command delivered through Moonraker's API.
 
-While the printer is unhealthy (errored / closed / unreachable), it prompts
-the system to communicate with the MCU by sending the configured G-code through
-Moonraker's API, so a powered-on motherboard is primed automatically instead of
-requiring a manual reset of the Nebula Pad.
+While unhealthy, it prompts Moonraker to reset the Klipper firmware
+(POST /api/printer/firmware_restart), which clears the Klipper shutdown state
+and resets the MCU, so a powered-on motherboard can re-establish communication.
 
 This lets the Nebula Pad prime/prepare for printing automatically when the
 motherboard powers back on, instead of requiring a manual reset.
@@ -23,6 +23,7 @@ import urllib.request
 MOONRAKER = os.environ.get("MOONRAKER_URL", "http://127.0.0.1:7125")
 PRIME_CONF = "/etc/printerwatch/prime.conf"
 STATE_PATH = "/api/printer"
+INFO_PATH = "/api/server/info"
 POLL_INTERVAL = 5
 
 
@@ -66,8 +67,16 @@ def moonraker_post(path, payload):
         return True, r.read().decode()
 
 
-def printer_healthy(data):
-    """True when Moonraker reports a printer that is not errored/closed."""
+def printer_healthy(data, info):
+    """True when Moonraker reports a Klippy that is connected, ready, and not
+    in an error/closed state."""
+    if not info:
+        return False
+    if info.get("klippy_connected") is False:
+        return False
+    if (info.get("klippy_state") or "") != "ready":
+        # ready == healthy; disconnected/startup/error/shutdown are not
+        return False
     if not data:
         return False
     st = data.get("state") or {}
@@ -77,6 +86,17 @@ def printer_healthy(data):
     if flags.get("closedOrError"):
         return False
     return True
+
+
+def fire_reset():
+    """Ask Moonraker to reset the Klipper firmware (clears shutdown, resets
+    MCU), via POST /api/printer/firmware_restart."""
+    try:
+        moonraker_post("/api/printer/firmware_restart", {})
+        return True
+    except Exception as e:
+        print("printerwatch: firmware restart failed:", e, flush=True)
+        return False
 
 
 def fire_prime(prime):
@@ -92,21 +112,27 @@ def fire_prime(prime):
 def main():
     prime = read_prime()
     ok, data = moonraker_get(STATE_PATH)
-    prev_online = ok and printer_healthy(data)
-    primed_while_unhealthy = False
+    ok2, info = moonraker_get(INFO_PATH)
+    prev_healthy = ok and ok2 and printer_healthy(data, info)
+    reset_sent = not prev_healthy  # prompt now if starting out unhealthy
+
     while True:
         ok, data = moonraker_get(STATE_PATH)
-        online = ok and printer_healthy(data)
+        ok2, info = moonraker_get(INFO_PATH)
+        healthy = ok and ok2 and printer_healthy(data, info)
 
-        if online and not prev_online:
-            # Transitioned to online: fire the prime action once.
+        if healthy and not prev_healthy:
+            # Transitioned to healthy: fire the prime action once.
             fire_prime(prime)
-        elif not online and not primed_while_unhealthy:
-            # Printer is unhealthy: prompt the system to communicate with the MCU.
-            fire_prime(prime)
-            primed_while_unhealthy = True
+        if not healthy and not reset_sent:
+            # Unhealthy: prompt Moonraker to reset the Klipper firmware so the
+            # connection to the (powered-on) MCU can re-establish.
+            fire_reset()
+            reset_sent = True
+        if healthy:
+            reset_sent = False
 
-        prev_online = online
+        prev_healthy = healthy
         time.sleep(POLL_INTERVAL)
 
 
