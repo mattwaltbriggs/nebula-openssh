@@ -127,18 +127,18 @@ This replaces the manual step of resetting the pad after switching the motherboa
 The watcher polls Moonraker at `http://127.0.0.1:7125` (override with `MOONRAKER_URL`) every 5
 seconds. It watches two endpoints:
 
-- `GET /api/printer` — printer flags (`error`, `closedOrError`) from the Moonraker printer state.
-- `GET /api/server/info` — `klippy_connected` and `klippy_state`.
+- `GET /api/printer` — printer state flags (`error`, `closedOrError`, `operational`).
+- `GET /server/info` — `klippy_connected` and `klippy_state` (`ready` == healthy).
 
 It judges the printer unhealthy when Klippy is not `ready`, or when the printer flags report an
 error/closed state.
 
-While unhealthy, it sends `POST /api/printer/firmware_restart` to Moonraker, which clears the
+While unhealthy, it sends `POST /printer/firmware_restart` to Moonraker, which clears the
 Klipper shutdown state and resets the MCU (per Moonraker docs, a plain `RESTART` does not clear
 the shutdown, `FIRMWARE_RESTART` does).
 
 When the printer transitions from unhealthy to healthy, it fires the prime action once via
-`POST /api/printer/gcode`.
+`POST /printer/gcode/script` with `{"script": "<gcode>"}`.
 
 The prime action lives in `/etc/printerwatch/prime.conf`:
 
