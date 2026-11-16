@@ -135,7 +135,8 @@ error/closed state.
 
 While unhealthy, it sends `POST /printer/firmware_restart` to Moonraker, which clears the
 Klipper shutdown state and resets the MCU (per Moonraker docs, a plain `RESTART` does not clear
-the shutdown, `FIRMWARE_RESTART` does).
+the shutdown, `FIRMWARE_RESTART` does), and restarts the MJPG camera streamer so the camera
+streams come back up.
 
 When the printer transitions from unhealthy to healthy, it fires the prime action once via
 `POST /printer/gcode/script` with `{"script": "<gcode>"}`.
