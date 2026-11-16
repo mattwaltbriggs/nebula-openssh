@@ -78,11 +78,20 @@ def moonraker_post(path, payload):
         return True, r.read().decode()
 
 
+def unwrap(obj):
+    """Moonraker wraps JSON-RPC results in a top-level "result" key; be
+    tolerant of both wrapped and unwrapped payloads."""
+    if isinstance(obj, dict) and isinstance(obj.get("result"), dict):
+        return obj["result"]
+    return obj
+
+
 def printer_healthy(data, info):
     """True when Moonraker reports a Klippy that is connected, ready, and not
     in an error/closed state."""
     if not info:
         return False
+    info = unwrap(info)
     if info.get("klippy_connected") is False:
         return False
     if (info.get("klippy_state") or "") != "ready":
@@ -90,6 +99,7 @@ def printer_healthy(data, info):
         return False
     if not data:
         return False
+    data = unwrap(data)
     st = data.get("state") or {}
     flags = st.get("flags") or {}
     if flags.get("error"):
