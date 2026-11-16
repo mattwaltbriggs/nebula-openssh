@@ -6,11 +6,13 @@ offline/unreachable to online (e.g. after the Ender 3 V3 SE motherboard was
 switched off and back on), it fires the configured prime action: a G-code
 command delivered through Moonraker's API.
 
+While the printer is unhealthy (errored / closed / unreachable), it prompts
+the system to communicate with the MCU by sending the configured G-code through
+Moonraker's API, so a powered-on motherboard is primed automatically instead of
+requiring a manual reset of the Nebula Pad.
+
 This lets the Nebula Pad prime/prepare for printing automatically when the
 motherboard powers back on, instead of requiring a manual reset.
-
-Moonraker's printer endpoint here is /api/printer (verified on the Nebula pad:
-/api/printer/state returns 404 on this Moonraker build).
 """
 
 import os
@@ -77,19 +79,33 @@ def printer_healthy(data):
     return True
 
 
+def fire_prime(prime):
+    """Send the configured G-code through Moonraker to prompt/prime the MCU."""
+    try:
+        moonraker_post("/api/printer/gcode", {"printer": prime["printer"], "gcode": prime["gcode"]})
+        return True
+    except Exception as e:
+        print("printerwatch: prime failed:", e, flush=True)
+        return False
+
+
 def main():
     prime = read_prime()
     ok, data = moonraker_get(STATE_PATH)
     prev_online = ok and printer_healthy(data)
+    primed_while_unhealthy = False
     while True:
         ok, data = moonraker_get(STATE_PATH)
         online = ok and printer_healthy(data)
+
         if online and not prev_online:
-            # Printer came back online: fire the prime action once.
-            try:
-                moonraker_post("/api/printer/gcode", {"printer": prime["printer"], "gcode": prime["gcode"]})
-            except Exception as e:
-                print("printerwatch: prime failed:", e, flush=True)
+            # Transitioned to online: fire the prime action once.
+            fire_prime(prime)
+        elif not online and not primed_while_unhealthy:
+            # Printer is unhealthy: prompt the system to communicate with the MCU.
+            fire_prime(prime)
+            primed_while_unhealthy = True
+
         prev_online = online
         time.sleep(POLL_INTERVAL)
 
