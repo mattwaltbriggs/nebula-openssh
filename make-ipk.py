@@ -35,6 +35,9 @@ def tgz(src):
                 info.uid = info.gid = 0
                 info.uname = info.gname = "root"
                 if info.isfile():
+                    base = os.path.basename(arc)
+                    if base in ("postinst", "preinst"):
+                        info.mode = 0o755
                     with open(full, "rb") as f:
                         t.addfile(info, f)
                 else:
