@@ -52,7 +52,7 @@ def read_prime():
 
 def moonraker_get(path):
     try:
-        with urllib.request.urlopen(MOONRACKER + path, timeout=5) as r:
+        with urllib.request.urlopen(MOONRAKER + path, timeout=5) as r:
             return True, json.loads(r.read().decode())
     except Exception:
         return False, None
@@ -61,7 +61,7 @@ def moonraker_get(path):
 def moonraker_post(path, payload):
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        MOONRACKER + path,
+        MOONRAKER + path,
         data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
