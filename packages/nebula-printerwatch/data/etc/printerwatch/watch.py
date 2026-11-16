@@ -28,13 +28,7 @@ STATE_PATH = "/api/printer"
 INFO_PATH = "/server/info"
 RESET_PATH = "/printer/firmware_restart"
 GC_PATH = "/printer/gcode/script"
-CAMERA_RESET_CMD = (
-    "pkill -f mjpegstreamer-adaptive; "
-    "pkill -f mjpeg-streamer; "
-    "pkill -f MJPG-Streamer; "
-    "sleep 3; "
-    "true"
-)
+CAMERA_RESET_CMD = "/etc/init.d/S50usb_camera restart"
 POLL_INTERVAL = 5
 
 
