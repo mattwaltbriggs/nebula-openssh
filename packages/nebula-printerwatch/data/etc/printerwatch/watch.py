@@ -8,6 +8,9 @@ command delivered through Moonraker's API.
 
 This lets the Nebula Pad prime/prepare for printing automatically when the
 motherboard powers back on, instead of requiring a manual reset.
+
+Moonraker's printer endpoint here is /api/printer (verified on the Nebula pad:
+/api/printer/state returns 404 on this Moonraker build).
 """
 
 import os
@@ -17,7 +20,7 @@ import urllib.request
 
 MOONRAKER = os.environ.get("MOONRAKER_URL", "http://127.0.0.1:7125")
 PRIME_CONF = "/etc/printerwatch/prime.conf"
-STATE_PATH = "/api/printer/state"
+STATE_PATH = "/api/printer"
 POLL_INTERVAL = 5
 
 
@@ -43,7 +46,7 @@ def read_prime():
 
 def moonraker_get(path):
     try:
-        with urllib.request.urlopen(MOONRAKER + path, timeout=5) as r:
+        with urllib.request.urlopen(MOONRACKER + path, timeout=5) as r:
             return True, json.loads(r.read().decode())
     except Exception:
         return False, None
@@ -52,7 +55,7 @@ def moonraker_get(path):
 def moonraker_post(path, payload):
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        MOONRAKER + path,
+        MOONRACKER + path,
         data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -61,13 +64,26 @@ def moonraker_post(path, payload):
         return True, r.read().decode()
 
 
+def printer_healthy(data):
+    """True when Moonraker reports a printer that is not errored/closed."""
+    if not data:
+        return False
+    st = data.get("state") or {}
+    flags = st.get("flags") or {}
+    if flags.get("error"):
+        return False
+    if flags.get("closedOrError"):
+        return False
+    return True
+
+
 def main():
     prime = read_prime()
-    ok, _ = moonraker_get(STATE_PATH)
-    prev_online = ok
+    ok, data = moonraker_get(STATE_PATH)
+    prev_online = ok and printer_healthy(data)
     while True:
-        ok, _ = moonraker_get(STATE_PATH)
-        online = ok
+        ok, data = moonraker_get(STATE_PATH)
+        online = ok and printer_healthy(data)
         if online and not prev_online:
             # Printer came back online: fire the prime action once.
             try:
