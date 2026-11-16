@@ -19,6 +19,7 @@ motherboard powers back on, instead of requiring a manual reset.
 import os
 import time
 import json
+import subprocess
 import urllib.request
 
 MOONRAKER = os.environ.get("MOONRAKER_URL", "http://127.0.0.1:7125")
@@ -27,6 +28,13 @@ STATE_PATH = "/api/printer"
 INFO_PATH = "/server/info"
 RESET_PATH = "/printer/firmware_restart"
 GC_PATH = "/printer/gcode/script"
+CAMERA_RESET_CMD = (
+    "pkill -f mjpegstreamer-adaptive; "
+    "pkill -f mjpeg-streamer; "
+    "pkill -f MJPG-Streamer; "
+    "sleep 3; "
+    "true"
+)
 POLL_INTERVAL = 5
 
 
@@ -102,6 +110,16 @@ def fire_reset():
         return False
 
 
+def fire_camera_reset():
+    """Restart the MJPG camera streamer so the camera streams come back up."""
+    try:
+        subprocess.run(["sh", "-c", CAMERA_RESET_CMD], check=False, timeout=30)
+        return True
+    except Exception as e:
+        print("printerwatch: camera streamer restart failed:", e, flush=True)
+        return False
+
+
 def fire_prime(prime):
     """Send the configured G-code through Moonraker to prompt/prime the MCU."""
     try:
@@ -129,8 +147,10 @@ def main():
             fire_prime(prime)
         if not healthy and not reset_sent:
             # Unhealthy: prompt Moonraker to reset the Klipper firmware so the
-            # connection to the (powered-on) MCU can re-establish.
+            # connection to the (powered-on) MCU can re-establish, and restart
+            # the MJPG camera streamer so the camera streams come back up.
             fire_reset()
+            fire_camera_reset()
             reset_sent = True
         if healthy:
             reset_sent = False
