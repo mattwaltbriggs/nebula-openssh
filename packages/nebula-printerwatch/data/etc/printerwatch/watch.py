@@ -2,14 +2,15 @@
 """Watch the Moonraker-backed printer connection.
 
 Polls Moonraker for the printer / Klippy connection state. When the printer
-transitions from an unhealthy state (errored, closed, or Klippy in shutdown) to
-healthy (Klippy ready and accepting commands) -- e.g. after the Ender 3 V3 SE
-motherboard was switched off and back on -- it fires the configured prime
-action: a G-code command delivered through Moonraker's API.
+transitions from an unhealthy state (Klippy in shutdown / error, or printer
+flags reporting an error / closed state) to healthy (Klippy ready, printer
+operational) -- e.g. after the Ender 3 V3 SE motherboard was switched off and
+back on -- it fires the configured prime action: a G-code command delivered
+through Moonraker's API.
 
 While unhealthy, it prompts Moonraker to reset the Klipper firmware
-(POST /api/printer/firmware_restart), which clears the Klipper shutdown state
-and resets the MCU, so a powered-on motherboard can re-establish communication.
+(POST /printer/firmware_restart), which clears the Klipper shutdown state and
+resets the MCU, so a powered-on motherboard can re-establish communication.
 
 This lets the Nebula Pad prime/prepare for printing automatically when the
 motherboard powers back on, instead of requiring a manual reset.
@@ -23,7 +24,9 @@ import urllib.request
 MOONRAKER = os.environ.get("MOONRAKER_URL", "http://127.0.0.1:7125")
 PRIME_CONF = "/etc/printerwatch/prime.conf"
 STATE_PATH = "/api/printer"
-INFO_PATH = "/api/server/info"
+INFO_PATH = "/server/info"
+RESET_PATH = "/printer/firmware_restart"
+GC_PATH = "/printer/gcode/script"
 POLL_INTERVAL = 5
 
 
@@ -90,9 +93,9 @@ def printer_healthy(data, info):
 
 def fire_reset():
     """Ask Moonraker to reset the Klipper firmware (clears shutdown, resets
-    MCU), via POST /api/printer/firmware_restart."""
+    MCU), via POST /printer/firmware_restart."""
     try:
-        moonraker_post("/api/printer/firmware_restart", {})
+        moonraker_post(RESET_PATH, {})
         return True
     except Exception as e:
         print("printerwatch: firmware restart failed:", e, flush=True)
@@ -102,7 +105,7 @@ def fire_reset():
 def fire_prime(prime):
     """Send the configured G-code through Moonraker to prompt/prime the MCU."""
     try:
-        moonraker_post("/api/printer/gcode", {"printer": prime["printer"], "gcode": prime["gcode"]})
+        moonraker_post(GC_PATH, {"script": prime["gcode"]})
         return True
     except Exception as e:
         print("printerwatch: prime failed:", e, flush=True)
